@@ -61,8 +61,8 @@ def inject_context(ctx, coro):
 
 
 class SelfBot(Bot):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, self_bot=True, **kwargs)
+    def __init__(self, *args, pm_help=False, **kwargs):
+        super().__init__(*args, self_bot=True, pm_help=False, **kwargs)
 
     def say(self, content=None, *args, **kwargs):
         ctx = _get_variable('_internal_context')
