@@ -146,7 +146,9 @@ def interactive_setup(settings):
                 print("That doesn't look like a valid token.")
         settings.save_settings()
 
-    settings.prefixes = DEFAULT_PREFIX
+    if not settings.prefixes:
+        settings.prefixes = DEFAULT_PREFIX
+        settings.save_settings()
 
     if first_run:
         print("\nThe configuration is done. Leave this window always open to"
