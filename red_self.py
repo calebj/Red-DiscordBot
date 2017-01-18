@@ -1,6 +1,6 @@
 __author__ = "Caleb Johnson <me@calebj.io>"
 __copyright__ = "Copyright 2016 Caleb Johnson and Holocor, LLC"
-__version__ = '2.0'
+__version__ = '2.1'
 
 __doc__ = """
 Selfbot wrapper by Caleb Johnson (GrumpiestVulcan/calebj#7377/me@calebj.io)
