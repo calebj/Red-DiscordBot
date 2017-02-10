@@ -129,9 +129,12 @@ def interactive_setup(settings):
     if first_run:
         print("Red selfbot - First run configuration\n"
               "If you use two-factor authentication, you must use a token "
-              "below.\nTo obtain your token, press ctrl-shift-i in the "
-              "discord client, click the 'console' tab, and enter "
-              "'localStorage.token' in the console that appears.")
+              "below. To obtain your token:\n"
+              " 1. Press ctrl-shift-i in the discord client\n"
+              " 2. Click the 'Application' tab and expand Local Storage\n"
+              " 3. Click the discordapp.com item under Local Storage\n"
+              " 4. Look for the 'token' key, and copy its value without quotes"
+              )
 
     if not settings.login_credentials:
         print("\nInsert your email or user session token:")
