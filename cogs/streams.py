@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 from .utils.dataIO import dataIO
-from .utils.chat_formatting import *
+from .utils.chat_formatting import escape_mass_mentions
 from .utils import checks
 from __main__ import send_cmd_help
 from collections import defaultdict
@@ -316,7 +316,7 @@ class Streams:
         url = "https://api.hitbox.tv/media/live/" + stream
         try:
             async with aiohttp.get(url) as r:
-                data = await r.json()
+                data = await r.json(encoding='utf-8')
             if "livestream" not in data:
                 return None
             if data["livestream"][0]["media_is_live"] == "0":
@@ -334,7 +334,7 @@ class Streams:
         header = {'Client-ID': self.settings.get("TWITCH_TOKEN", "")}
         try:
             async with session.get(url, headers=header) as r:
-                data = await r.json()
+                data = await r.json(encoding='utf-8')
             await session.close()
             if r.status == 400:
                 return 400
@@ -353,7 +353,7 @@ class Streams:
         url = "https://beam.pro/api/v1/channels/" + stream
         try:
             async with aiohttp.get(url) as r:
-                data = await r.json()
+                data = await r.json(encoding='utf-8')
             if "online" in data:
                 if data["online"] is True:
                     data = self.beam_embed(data)
@@ -402,13 +402,18 @@ class Streams:
         return embed
 
     def beam_embed(self, data):
+        default_avatar = ("https://beam.pro/_latest/assets/images/main/"
+                          "avatars/default.jpg")
         user = data["user"]
         url = "https://beam.pro/" + data["token"]
         embed = discord.Embed(title=data["name"], url=url)
         embed.set_author(name=user["username"])
         embed.add_field(name="Followers", value=data["numFollowers"])
         embed.add_field(name="Total views", value=data["viewersTotal"])
-        embed.set_thumbnail(url=user["avatarUrl"])
+        if user["avatarUrl"]:
+            embed.set_thumbnail(url=user["avatarUrl"])
+        else:
+            embed.set_thumbnail(url=default_avatar)
         embed.set_image(url=data["thumbnail"]["url"])
         embed.color = 0x4C90F3
         if data["type"] is not None:
