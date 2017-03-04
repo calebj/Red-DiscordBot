@@ -14,13 +14,13 @@ official Red server or Cog Support server (https://discord.gg/2DacSZ7)
 import asyncio
 import sys
 import functools
-import discord
 import traceback
+from io import TextIOWrapper
+from getpass import getpass
+from red import Bot, initialize, main, set_cog
+import discord
 from discord.ext import commands
 from discord.ext.commands.bot import _get_variable
-from io import TextIOWrapper
-from red import Bot, initialize, main, set_cog
-from getpass import getpass
 
 
 DEFAULT_PREFIX = []
