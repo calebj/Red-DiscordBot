@@ -86,8 +86,9 @@ class SelfBot(Bot):
             coro = self.send_message(destination, content, *args, **kwargs)
         return self._augmented_msg(coro, **params)
 
-    # We can't reply to anyone but ourselves
+    # We can't reply or whisper to anyone but ourselves
     reply = say
+    whisper = say
 
     def upload(self, *args, **kwargs):
         ctx = _get_variable('_internal_context')
