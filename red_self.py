@@ -90,6 +90,9 @@ class SelfBot(Bot):
     reply = say
     whisper = say
 
+    def change_presence(self, game=None, status=None, afk=True):
+        return super().change_presence(game=game, status=status, afk=afk)
+
     def upload(self, *args, **kwargs):
         ctx = _get_variable('_internal_context')
         destination = ctx.message.channel
