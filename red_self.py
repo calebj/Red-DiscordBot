@@ -8,7 +8,7 @@ Selfbot wrapper by Caleb Johnson (GrumpiestVulcan/calebj#7377/me@calebj.io)
 Red core originally by Twentysix26 and improved upon by many
 
 For support or to report a bug, message me @calebj#7377 in either the
-official Red server or Cog Support server (https://discord.gg/2DacSZ7)
+official Red server (https://discord.gg/red) or Cog Support server (https://discord.gg/2DacSZ7)
 """
 
 import asyncio
