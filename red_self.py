@@ -146,6 +146,19 @@ class SelfBot(Bot):
         msg = await super().send_file(destination, fp, **kwargs)
         return msg
 
+    def wait_for_message(self, timeout=None, *, author=None, channel=None, content=None, check=None):
+        if author is not None and author.id == self.user.id:
+            def new_check(message):
+                result = self.user_allowed(message)
+                if callable(check):
+                    result = result and check(message)
+                return result
+        else:
+            new_check = check
+
+        return super().wait_for_message(timeout, author=author, channel=channel,
+                                        content=content, check=new_check)
+
     # We can't reply or whisper to anyone but ourselves
     reply = say
     whisper = say
