@@ -16,6 +16,7 @@ import sys
 import functools
 import traceback
 from io import TextIOWrapper
+from collections import OrderedDict
 from getpass import getpass
 from red import Bot, initialize, main, set_cog
 import discord
@@ -44,6 +45,32 @@ description = ("Red Selfbot - A multifunction Discord bot by Twentysix, "
                "selfbot.")
 
 
+class ODQueue():
+    def __init__(self, items=(), maxlen=None):
+        self._maxlen = maxlen
+        self._od = OrderedDict((k, None) for k in items)
+
+    def append(self, item):
+        if item in self:
+            self._od.move_to_end(item)
+            return
+        if len(self._od) == self._maxlen:
+            self.popleft()
+        self._od[item] = None
+
+    def pop(self):
+        return self._od.popitem()[0]
+
+    def popleft(self):
+        return self._od.popitem(last=False)[0]
+
+    def __contains__(self, item):
+        return item in self._od
+
+    def __len__(self):
+        return len(self._od)
+
+
 def inject_context(ctx, coro):
     @functools.wraps(coro)
     @asyncio.coroutine
@@ -63,68 +90,75 @@ def inject_context(ctx, coro):
 class SelfBot(Bot):
     def __init__(self, *args, pm_help=False, **kwargs):
         super().__init__(*args, self_bot=True, pm_help=False, **kwargs)
+        self.sent_messages = ODQueue(maxlen=8)
 
-    def say(self, content=None, *args, **kwargs):
+    async def say(self, content=None, *args, **kwargs):
         ctx = _get_variable('_internal_context')
         destination = ctx.message.channel
 
-        extensions = ('delete_after', 'delete_before')
+        extensions = ('delete_after')
         params = {k: kwargs.pop(k, None) for k in extensions}
 
         selfedit = (not ctx.prefix.startswith(APPEND_PREFIX) and
                     not ctx.message.edited_timestamp)
-        selfdel = ctx.prefix.startswith(DELETE_PREFIX)
 
-        if selfedit or selfdel:
-            if selfdel:
-                coro = asyncio.sleep(0)
-                params['delete_before'] = ctx.message
-            else:
-                coro = self.edit_message(ctx.message, new_content=content,
-                                         *args, **kwargs)
+        if ctx.prefix.startswith(DELETE_PREFIX):
+            try:
+                await self.delete_message(ctx.message)
+            except:
+                pass
+            return
+        elif selfedit:
+            coro = self.edit_message(ctx.message, new_content=content,
+                                     *args, **kwargs)
         else:
             coro = self.send_message(destination, content, *args, **kwargs)
-        return self._augmented_msg(coro, **params)
+
+        try:
+            msg = await self._augmented_msg(coro, **params)
+            if selfedit:
+                ctx.message.edited_timestamp = msg.edited_timestamp
+
+        except discord.errors.NotFound:
+            coro = self.send_message(destination, content, *args, **kwargs)
+            msg = await self._augmented_msg(coro, **params)
+
+        return msg
+
+    async def upload(self, *args, **kwargs):
+        ctx = _get_variable('_internal_context')
+
+        if ctx.prefix.startswith(DELETE_PREFIX):
+            await self.delete_message(ctx.message)
+
+        return await super().upload(*args, **kwargs)
+
+    async def send_message(self, destination, content=None, **kwargs):
+        self.sent_messages.append((destination.id, content.strip()))
+        msg = await super().send_message(destination, content, **kwargs)
+        return msg
+
+    async def send_file(self, destination, fp, **kwargs):
+        content = kwargs.get('content')
+        if content:
+            content = content.strip()
+        self.sent_messages.append((destination.id, content))
+        msg = await super().send_file(destination, fp, **kwargs)
+        return msg
 
     # We can't reply or whisper to anyone but ourselves
     reply = say
     whisper = say
 
+    # default afk=True
     def change_presence(self, game=None, status=None, afk=True):
         return super().change_presence(game=game, status=status, afk=afk)
 
-    def upload(self, *args, **kwargs):
-        ctx = _get_variable('_internal_context')
-        destination = ctx.message.channel
-
-        extensions = ('delete_after', 'delete_before')
-        params = {k: kwargs.pop(k, None) for k in extensions}
-
-        coro = self.send_file(destination, *args, **kwargs)
-        return self._augmented_msg(coro, **params)
-
-    @asyncio.coroutine
-    def _augmented_msg(self, coro, **kwargs):
-
-        delete_before = kwargs.get('delete_before')
-        if delete_before:
-            yield from self.delete_message(delete_before)
-
-        msg = yield from coro
-
-        delete_after = kwargs.get('delete_after')
-        if delete_after is not None:
-            @asyncio.coroutine
-            def delete():
-                yield from asyncio.sleep(delete_after)
-                yield from self.delete_message(msg)
-
-            discord.compat.create_task(delete(), loop=self.loop)
-
-        return msg
-
     def user_allowed(self, message):
-        return message.author.id == self.user.id
+        author_ok = message.author.id == self.user.id
+        check_tup = (message.channel.id, message.content)
+        botsent_ok = check_tup not in self.sent_messages
+        return author_ok and botsent_ok
 
 
 def interactive_setup(settings):
