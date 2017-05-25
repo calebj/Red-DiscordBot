@@ -1,15 +1,20 @@
 __author__ = "Caleb Johnson <me@calebj.io>"
-__copyright__ = "Copyright 2016 Caleb Johnson and Holocor, LLC"
-__version__ = '2.1'
+__copyright__ = "Copyright 2017 Caleb Johnson and Holocor, LLC"
+__version__ = '2.2'
 
 __doc__ = """
-Selfbot wrapper by Caleb Johnson (GrumpiestVulcan/calebj#7377/me@calebj.io)
+  ~= Selfbot wrapper v%s by Caleb Johnson (GrumpiestVulcan/me@calebj.io) =~
 
-Red core originally by Twentysix26 and improved upon by many
+Red-DiscordBot core originally by Twentysix26 and improved upon by many.
 
-For support or to report a bug, message me @calebj#7377 in either the
-official Red server (https://discord.gg/red) or Cog Support server (https://discord.gg/2DacSZ7)
-"""
+For support or to report a bug, message me @calebj#7377 in either:
+ - the Cog Support server (https://discord.gg/2DacSZ7), in #support_calebj, or
+ - the official Red server (https://discord.gg/red)
+
+Some third-party modules may violate Discord's terms of service if they cause
+your selfbot to respond to other users. The authors are not responsible for
+any consequences such behavior may have, and do not support such use cases.
+""" % __version__
 
 import asyncio
 import sys
@@ -22,22 +27,10 @@ from red import Bot, initialize, main, set_cog
 import discord
 from discord.ext import commands
 from discord.ext.commands.bot import _get_variable
+from webhook import WebhookBotMixin
 
 
-DEFAULT_PREFIX = []
-DELETE_PREFIX = 'd'  # Prepend prefix with this to delete trigger message
-APPEND_PREFIX = 'a'  # prepend prefix with this to leave trigger message
-EDIT_PREFIX = 's'    # default behavior, used in short
-
-selfs = ['self,', 'self, ']
-short_prefix = '!'
-for pp in (DELETE_PREFIX, APPEND_PREFIX, EDIT_PREFIX):
-    for p in selfs:
-        if not p.startswith(pp):
-            p = pp + p
-        DEFAULT_PREFIX.append(p)
-    DEFAULT_PREFIX.append(pp + short_prefix)
-DEFAULT_PREFIX = sorted(DEFAULT_PREFIX, reverse=True)
+DEFAULT_PREFIX = ['self, ', 'self,', '!']
 
 
 description = ("Red Selfbot - A multifunction Discord bot by Twentysix, "
@@ -57,6 +50,10 @@ class ODQueue():
         if len(self._od) == self._maxlen:
             self.popleft()
         self._od[item] = None
+
+    def extend(self, items):
+        for item in items:
+            self.append(item)
 
     def pop(self):
         return self._od.popitem()[0]
@@ -87,64 +84,88 @@ def inject_context(ctx, coro):
     return wrapped
 
 
-class SelfBot(Bot):
+def get_selfbot_cog(bot):
+    selfbot = bot.get_cog('SelfBot')
+    if not selfbot:
+        try:
+            bot.load_extension('cogs.selfbot')
+        except:
+            return None
+    return bot.get_cog('SelfBot')
+
+
+def prefix_manager(bot, message):
+    selfbot = get_selfbot_cog(bot)
+    if not selfbot:
+        return bot.settings.get_prefixes(message.server)
+    else:
+        return selfbot.prefix_manager(bot, message)
+
+
+class SelfBot(Bot, WebhookBotMixin):
+    IS_SELFBOT = True  # checked in selfbot-only cog loads
+    __version__ = __version__
+    __doc__ = __doc__
+
     def __init__(self, *args, pm_help=False, **kwargs):
         super().__init__(*args, self_bot=True, pm_help=False, **kwargs)
-        self.sent_messages = ODQueue(maxlen=8)
+        self.bot_messages = ODQueue(maxlen=128)
+        self.command_prefix = prefix_manager
 
-    async def say(self, content=None, *args, **kwargs):
+    async def say(self, *args, skip_selfbot=False, **kwargs):
         ctx = _get_variable('_internal_context')
-        destination = ctx.message.channel
 
-        extensions = ('delete_after')
-        params = {k: kwargs.pop(k, None) for k in extensions}
-
-        selfedit = (not ctx.prefix.startswith(APPEND_PREFIX) and
-                    not ctx.message.edited_timestamp)
-
-        if ctx.prefix.startswith(DELETE_PREFIX):
-            try:
-                await self.delete_message(ctx.message)
-            except:
-                pass
-            return
-        elif selfedit:
-            coro = self.edit_message(ctx.message, new_content=content,
-                                     *args, **kwargs)
+        selfbot = get_selfbot_cog(self)
+        if selfbot and not skip_selfbot:
+            msg = await selfbot.say(ctx, *args, **kwargs)
         else:
-            coro = self.send_message(destination, content, *args, **kwargs)
+            msg = await super().say(*args, **kwargs)
 
-        try:
-            msg = await self._augmented_msg(coro, **params)
-            if selfedit:
-                ctx.message.edited_timestamp = msg.edited_timestamp
-
-        except discord.errors.NotFound:
-            coro = self.send_message(destination, content, *args, **kwargs)
-            msg = await self._augmented_msg(coro, **params)
-
+        self.bot_messages.append(msg.id)
         return msg
 
-    async def upload(self, *args, **kwargs):
+    async def upload(self, *args, skip_selfbot=False, **kwargs):
         ctx = _get_variable('_internal_context')
 
-        if ctx.prefix.startswith(DELETE_PREFIX):
-            await self.delete_message(ctx.message)
+        selfbot = get_selfbot_cog(self)
+        if selfbot and not skip_selfbot:
+            msg = await selfbot.upload(ctx, *args, **kwargs)
+        else:
+            msg = await super().upload(*args, **kwargs)
 
-        return await super().upload(*args, **kwargs)
+        self.bot_messages.append(msg.id)
+        return msg
 
     async def send_message(self, destination, content=None, **kwargs):
-        self.sent_messages.append((destination.id, content.strip()))
-        msg = await super().send_message(destination, content, **kwargs)
+        if content is not None:
+            self.bot_messages.append((destination.id, content.strip()))
+
+        selfbot = get_selfbot_cog(self)
+        if selfbot and destination.id == self.user.id:
+            msg = await selfbot.send_self_message(content, **kwargs)
+        else:
+            msg = await super().send_message(destination, content, **kwargs)
+
+        self.bot_messages.append(msg.id)
         return msg
 
     async def send_file(self, destination, fp, **kwargs):
         content = kwargs.get('content')
-        if content:
-            content = content.strip()
-        self.sent_messages.append((destination.id, content))
-        msg = await super().send_file(destination, fp, **kwargs)
+        if content is not None:
+            self.bot_messages.append((destination.id, content.strip()))
+
+        selfbot = get_selfbot_cog(self)
+        if selfbot and destination.id == self.user.id:
+            msg = await selfbot.send_self_file(fp, **kwargs)
+        else:
+            msg = await super().send_file(destination, fp, **kwargs)
+
+        self.bot_messages.append(msg.id)
         return msg
+
+    def edit_message(self, message, new_content=None, **kwargs):
+        self.bot_messages.append(message.id)
+        return super().edit_message(message, new_content, **kwargs)
 
     def wait_for_message(self, timeout=None, *, author=None, channel=None, content=None, check=None):
         if author is not None and author.id == self.user.id:
@@ -159,9 +180,41 @@ class SelfBot(Bot):
         return super().wait_for_message(timeout, author=author, channel=channel,
                                         content=content, check=new_check)
 
-    # We can't reply or whisper to anyone but ourselves
+    # We can't reply to anyone but ourselves
     reply = say
-    whisper = say
+
+    async def whisper(self, *args, skip_selfbot=False, **kwargs):
+        ctx = _get_variable('_internal_context')
+
+        selfbot = get_selfbot_cog(self)
+        if selfbot and not skip_selfbot:
+            msg = await selfbot.whisper(ctx, *args, **kwargs)
+            self.bot_messages.append(msg.id)
+            return msg
+
+        msg = ('For your safety, a whisper message was suppressed. '
+               'Normally, it would go to your designated selfbot whisper '
+               'channel. However, the selfbot cog could not be loaded or '
+               'used. Reply "post it anyway" within 30s to do so.')
+
+        msg = await self.say(msg)
+
+        def check(msg):
+            return msg.content.lower().strip('.!') == 'post it anyway'
+
+        reply = await self.wait_for_message(timeout=30, author=msg.author,
+                                            channel=msg.channel,
+                                            check=check)
+        if reply:
+            for m in (msg, reply):
+                try:
+                    await self.bot.delete_message(m)
+                except:
+                    pass
+            msg = await self.say(*args, **kwargs)
+
+        self.bot_messages.append(msg.id)
+        return msg
 
     # default afk=True
     def change_presence(self, game=None, status=None, afk=True):
@@ -170,8 +223,10 @@ class SelfBot(Bot):
     def user_allowed(self, message):
         author_ok = message.author.id == self.user.id
         check_tup = (message.channel.id, message.content)
-        botsent_ok = check_tup not in self.sent_messages
-        return author_ok and botsent_ok
+        botsent_ok = check_tup not in self.bot_messages
+        botedit_ok = message.id not in self.bot_messages
+
+        return author_ok and botsent_ok and botedit_ok
 
 
 def interactive_setup(settings):
@@ -228,9 +283,11 @@ if __name__ == '__main__':
     error = False
 
     try:
+        # NOTE: may become necessary to disable this in red.py if run here.
         if not bot.settings.no_prompt:
             interactive_setup(bot.settings)
         print(__doc__)
+        get_selfbot_cog(bot)
         loop.run_until_complete(main(bot))
 
     except discord.LoginFailure:
