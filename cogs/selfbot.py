@@ -22,7 +22,8 @@ DEFAULT_JSON = {
     'FUSED_FLAG'     : 'f',   # deletes command and repl[y|ies] after a time
     'FUSE_TIMER'     : 60,    # time to wait before deleting
     'FUSED_EDIT'     : True,  # edit in-place or reply normally when fused?
-    'LOCKOUT_PREFIX' : 'selfbot, please execute the following command: '
+    'LOCKOUT_PREFIX' : 'selfbot, please execute the following command: ',
+    'FLAGLESS_MODE'  : None
 }
 
 
@@ -63,6 +64,10 @@ class SelfBot:
     def update_prefix_cache(self):
         base_prefixes = list(self.bot.settings.prefixes)
         prefixes = {self.settings.get('LOCKOUT_PREFIX')}
+
+        if self.settings.get('FLAGLESS_MODE'):
+            prefixes |= set(base_prefixes)
+
         for mode in COMMAND_MODES:
             mode_flag = self.settings.get(mode + '_FLAG')
             if not mode_flag:
@@ -97,6 +102,11 @@ class SelfBot:
         # don't edit if message has already been edited
         if action & MessageAction.EDIT and msg.edited_timestamp:
             action ^= (MessageAction.NORMAL | MessageAction.EDIT)
+
+
+        flagless_mode = self.settings.get('FLAGLESS_MODE')
+        if flagless_mode in COMMAND_MODES and action == MessageAction.DEFAULT:
+            return MessageAction[flagless_mode]
 
         return action
 
@@ -389,7 +399,8 @@ class SelfBot:
                 'Fused edit mode   : %s'  % self.settings['FUSED_EDIT'],
                 'Emergency prefix  : ' + (self.settings.get('LOCKOUT_PREFIX') or '[none]'),
                 'Whisper channel   : ' + channel,
-                'Whisper webhook   : ' + hook
+                'Whisper webhook   : ' + hook,
+                'Flagless mode     : ' + (self.settings.get('FLAGLESS_MODE') or '[none]'),
             ])
             await self.bot.say('Current settings:\n' + box(msg))
 
@@ -469,6 +480,25 @@ class SelfBot:
         self.settings['LOCKOUT_PREFIX'] = prefix
         self.update_prefix_cache()
         self.save()
+
+    @sbset.command(name='flagless')
+    async def sbs_fused_edit(self, mode: str = None):
+        "Configures which mode to use for commands run with a flagless prefix."
+        setmsg = ("set to %s" % mode.lower()) if mode else 'disabled'
+        current = self.settings.get('FLAGLESS_MODE')
+        if (mode and mode.lower()) == (current and current.lower()):
+            await self.bot.say('Flagless mode was already %s.' % setmsg)
+            return
+        elif mode and (mode.upper() not in COMMAND_MODES):
+            await self.bot.say("'%s' isn't a valid mode. Available modes: %s."
+                               % (mode, ', '.join(COMMAND_MODES).lower()))
+            return
+
+        self.settings['FLAGLESS_MODE'] = mode and mode.upper()
+        self.update_prefix_cache()
+        self.save()
+
+        await self.bot.say('Flagless mode is now %s.' % setmsg)
 
     @sbset.group(pass_context=True, no_pm=True, invoke_without_command=True, name='channel')
     async def sbs_notif_channel(self, ctx, channel : discord.Channel = None):
