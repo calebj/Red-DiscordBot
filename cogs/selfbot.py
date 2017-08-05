@@ -23,7 +23,8 @@ DEFAULT_JSON = {
     'FUSE_TIMER'     : 60,    # time to wait before deleting
     'FUSED_EDIT'     : True,  # edit in-place or reply normally when fused?
     'LOCKOUT_PREFIX' : 'selfbot, please execute the following command: ',
-    'FLAGLESS_MODE'  : None
+    'FLAGLESS_MODE'  : None,  # mode to use for flagless aka base prefix only
+    'FLAG_MERGE'     : True   # auto-merge flags into prefix: (s+self -> self)
 }
 
 
@@ -64,6 +65,7 @@ class SelfBot:
     def update_prefix_cache(self):
         base_prefixes = list(self.bot.settings.prefixes)
         prefixes = {self.settings.get('LOCKOUT_PREFIX')}
+        merge = self.settings.get('FLAG_MERGE', True)
 
         if self.settings.get('FLAGLESS_MODE'):
             prefixes |= set(base_prefixes)
@@ -73,8 +75,8 @@ class SelfBot:
             if not mode_flag:
                 continue
             for p in base_prefixes:
-                to_add = p if p.startswith(mode_flag) else (mode_flag + p)
-                prefixes.add(to_add)
+                merge_p = merge and p.startswith(mode_flag)
+                prefixes.add(p if merge_p else (mode_flag + p))
 
         self.prefix_cache = sorted(filter(None, prefixes), reverse=True)
 
@@ -401,6 +403,7 @@ class SelfBot:
                 'Whisper channel   : ' + channel,
                 'Whisper webhook   : ' + hook,
                 'Flagless mode     : ' + (self.settings.get('FLAGLESS_MODE') or '[none]'),
+                'Flag prefix merge : %s' % self.settings['FLAG_MERGE']
             ])
             await self.bot.say('Current settings:\n' + box(msg))
 
@@ -500,6 +503,18 @@ class SelfBot:
 
         await self.bot.say('Flagless mode is now %s.' % setmsg)
 
+    @sbset.command(name='flagmerge')
+    async def sbs_flag_merge(self, on_off: bool):
+        "Configures whether flags merge with the prefix (s+self -> self)."
+        adj = 'enabled' if on_off else 'disabled'
+        if on_off == self.settings.get('FLAG_MERGE', True):
+            await self.bot.say('Flag merging was already %s.' % adj)
+            return
+        self.settings['FLAG_MERGE'] = on_off
+        self.update_prefix_cache()
+        self.save()
+        await self.bot.say('Flag merging is now %s.' % adj)
+
     @sbset.group(pass_context=True, no_pm=True, invoke_without_command=True, name='channel')
     async def sbs_notif_channel(self, ctx, channel : discord.Channel = None):
         "Sets the selfbot notification channel"
@@ -566,7 +581,7 @@ class SelfBot:
             await self.bot.process_commands(after)
 
     async def on_command_completion(self, command, ctx):
-        if command.qualified_name == 'set prefix':
+        if ctx.command.qualified_name == 'set prefix':
             self.update_prefix_cache()
         if ctx.message.id in self.public_whisper:
             self.public_whisper.remove(ctx.message.id)
