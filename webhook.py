@@ -228,7 +228,7 @@ class WebhookBotMixin:
         if embed:
             payload['embeds'] = [embed]
 
-        return self.http.request(r, json=payload, params={'wait': True})
+        return self.http.request(r, json=payload, params={'wait': 'true'})
 
     def _post_webhook_file(self, webhook, buffer, *, filename=None, content=None, tts=False):
         r = Route('POST', '/webhooks/{webhook.id}/{webhook.token}', webhook=webhook)
@@ -241,4 +241,4 @@ class WebhookBotMixin:
         form.add_field('payload_json', utils.to_json(payload))
         form.add_field('file', buffer, filename=filename, content_type='application/octet-stream')
 
-        return self.http.request(r, data=form, params={'wait': True})
+        return self.http.request(r, data=form, params={'wait': 'true'})
