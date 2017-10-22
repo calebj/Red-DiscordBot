@@ -10,8 +10,7 @@ from __main__ import settings
 #
 
 def is_owner_check(ctx):
-    _id = ctx.message.author.id
-    return _id == settings.owner or _id in ctx.bot.settings.co_owners
+    return ctx.message.author.id == settings.owner
 
 def is_owner():
     return commands.check(is_owner_check)
