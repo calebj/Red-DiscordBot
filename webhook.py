@@ -182,7 +182,7 @@ class WebhookBotMixin:
         r = Route('DELETE', resource, webhook=webhook)
         return await self.http.request(r)
 
-    async def webhook_message(self, webhook, content, *, tts=False, embed=None):
+    async def webhook_message(self, webhook, content, *, tts=False, embed=None, wait=True):
         if type(webhook) is not Webhook:
             raise TypeError('webhook parameter must be of type Webhook')
 
@@ -191,12 +191,15 @@ class WebhookBotMixin:
         if embed is not None:
             embed = embed.to_dict()
 
-        data = await self._post_webhook_message(webhook, content, tts=tts, embed=embed)
-        channel = webhook.channel
-        message = self.connection._create_message(channel=channel, **data)
-        return message
+        data = await self._post_webhook_message(webhook, content, tts=tts,
+                                                embed=embed, wait=wait)
 
-    async def webhook_file(self, webhook, fp, *, filename=None, content=None, tts=False):
+        if wait:
+            channel = webhook.channel
+            message = self.connection._create_message(channel=channel, **data)
+            return message
+
+    async def webhook_file(self, webhook, fp, *, filename=None, content=None, tts=False, wait=True):
         if type(webhook) is not Webhook:
             raise TypeError('webhook parameter must be of type Webhook')
 
@@ -210,12 +213,14 @@ class WebhookBotMixin:
 
         content = str(content) if content is not None else None
         data = await self._post_webhook_file(webhook, buffer, filename=filename,
-                                             content=content, tts=tts)
-        channel = webhook.channel
-        message = self.connection._create_message(channel=channel, **data)
-        return message
+                                             content=content, tts=tts, wait=wait)
 
-    def _post_webhook_message(self, webhook, content, *, tts=False, embed=None):
+        if wait:
+            channel = webhook.channel
+            message = self.connection._create_message(channel=channel, **data)
+            return message
+
+    def _post_webhook_message(self, webhook, content, *, tts=False, embed=None, wait=True):
         r = Route('POST', '/webhooks/{webhook.id}/{webhook.token}', webhook=webhook)
         payload = {}
 
@@ -228,9 +233,10 @@ class WebhookBotMixin:
         if embed:
             payload['embeds'] = [embed]
 
-        return self.http.request(r, json=payload, params={'wait': 'true'})
+        wait = 'true' if wait else 'false'
+        return self.http.request(r, json=payload, params={'wait': wait})
 
-    def _post_webhook_file(self, webhook, buffer, *, filename=None, content=None, tts=False):
+    def _post_webhook_file(self, webhook, buffer, *, filename=None, content=None, tts=False, wait=True):
         r = Route('POST', '/webhooks/{webhook.id}/{webhook.token}', webhook=webhook)
         form = aiohttp.FormData()
 
@@ -241,4 +247,5 @@ class WebhookBotMixin:
         form.add_field('payload_json', utils.to_json(payload))
         form.add_field('file', buffer, filename=filename, content_type='application/octet-stream')
 
-        return self.http.request(r, data=form, params={'wait': 'true'})
+        wait = 'true' if wait else 'false'
+        return self.http.request(r, data=form, params={'wait': wait})
