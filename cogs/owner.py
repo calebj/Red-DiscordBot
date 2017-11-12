@@ -478,6 +478,62 @@ class Owner:
             log.debug('stream cleared by owner')
         await self.bot.say("Done.")
 
+    @_set.command(pass_context=True)
+    @checks.is_owner()
+    async def advgame(self, ctx, type: str, *, title=None):
+        """Sets Red's "game" type and title.
+
+        Type can be 'none', 'same', 'playing', 'listening', or 'watching'.
+
+        The 'same' option reuses the type of the current game, or 'playing'
+        if one isn't set.
+
+        If game is left blank, the existing title is used.
+        For 'streaming', see the [p]set stream command.
+        """
+
+        GAME_TYPES = {
+            'none'      : None,
+            'same'      : -1,
+            'playing'   : 0,
+            'listening' : 2,
+            'watching'  : 3
+        }
+
+        server = ctx.message.server
+        if server is None and self.bot.servers:
+            server = list(self.bot.servers)[0]
+
+        current_status = server.me.status if server is not None else None
+        current_game = server.me.game if server is not None else None
+
+        try:
+            type = GAME_TYPES[type.strip().lower()]
+        except KeyError:
+            await self.bot.say("Unknown status type '%s'. Options are: %s."
+                               % (type, ','.join(GAME_TYPES.keys())))
+            return
+
+        if type is GAME_TYPES['same']:
+            if current_game:
+                type = current_game.type
+            else:
+                type = GAME_TYPES['playing']
+
+        if title:
+            title = title.strip()
+            game = discord.Game(name=title, type=type)
+        elif type is None:
+            game = None
+        elif current_game:
+            game = discord.Game(name=current_game.name, type=type)
+        else:
+            await self.bot.say('If no game is set, you must provide a title.')
+            return
+
+        await self.bot.change_presence(game=game, status=current_status)
+        await self.bot.say("Done.")
+
     @_set.command()
     @checks.is_owner()
     async def avatar(self, url):
