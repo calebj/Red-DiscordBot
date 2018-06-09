@@ -106,12 +106,12 @@ class Command(commands.Command):
 class GroupMixin(commands.GroupMixin):
     """Mixin for `Group` and `Red` classes.
 
-    This class inherits from `discord.ext.commands.GroupMixin`.
+    This class inherits from :class:`discord.ext.commands.GroupMixin`.
     """
 
     def command(self, *args, **kwargs):
         """A shortcut decorator that invokes :func:`.command` and adds it to
-        the internal command list via :meth:`~.GroupMixin.add_command`.
+        the internal command list.
         """
 
         def decorator(func):
@@ -123,7 +123,7 @@ class GroupMixin(commands.GroupMixin):
 
     def group(self, *args, **kwargs):
         """A shortcut decorator that invokes :func:`.group` and adds it to
-        the internal command list via :meth:`~.GroupMixin.add_command`.
+        the internal command list.
         """
 
         def decorator(func):
@@ -137,8 +137,8 @@ class GroupMixin(commands.GroupMixin):
 class Group(Command, GroupMixin, commands.Group):
     """Group command class for Red.
 
-    This class inherits from `Command`, with `GroupMixin` and  `discord.ext.commands.Group`
-    mixed in.
+    This class inherits from `Command`, with :class:`GroupMixin` and
+    `discord.ext.commands.Group` mixed in.
     """
 
     def __init__(self, *args, **kwargs):
