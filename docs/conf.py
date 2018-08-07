@@ -202,4 +202,5 @@ intersphinx_mapping = {
     "python": ("https://docs.python.org/3.6", None),
     "dpy": ("https://discordpy.readthedocs.io/en/rewrite/", None),
     "motor": ("https://motor.readthedocs.io/en/stable/", None),
+    "packaging": ("https://packaging.pypa.io/en/stable/", None),
 }

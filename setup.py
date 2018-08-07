@@ -19,6 +19,7 @@ requirements = [
     "idna-ssl==1.1.0",
     "idna==2.7",
     "multidict==4.4.0",
+    "packaging==17.1",
     "python-levenshtein==0.12.0",
     "pyyaml==3.13",
     "raven==6.9.0",

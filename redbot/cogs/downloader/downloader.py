@@ -1,11 +1,11 @@
-import os
-import shutil
-from pathlib import Path
-from sys import path as syspath
-from typing import Tuple, Union
-
 import discord
+import os
+from pathlib import Path
+import shutil
 import sys
+from sys import path as syspath
+from typing import Collection, FrozenSet, Tuple, Union
+
 
 from redbot.core import Config
 from redbot.core import checks
@@ -17,10 +17,11 @@ from redbot.core import commands
 from redbot.core.bot import Red
 from .checks import do_install_agreement
 from .converters import InstalledCog
-from .errors import CloningError, ExistingGitRepo
-from .installable import Installable
+from .errors import CloningError, ExistingRepo, InvalidRepoName
+from .installable import Installable, from_json as installable_from_json
 from .log import log
-from .repo_manager import RepoManager, Repo
+from .repo import Repo
+from .repo_manager import RepoManager
 
 _ = Translator("Downloader", __file__)
 
@@ -42,6 +43,7 @@ class Downloader:
 
         self.LIB_PATH.mkdir(parents=True, exist_ok=True)
         self.SHAREDLIB_PATH.mkdir(parents=True, exist_ok=True)
+
         if not self.SHAREDLIB_INIT.exists():
             with self.SHAREDLIB_INIT.open(mode="w", encoding="utf-8") as _:
                 pass
@@ -49,38 +51,48 @@ class Downloader:
         if str(self.LIB_PATH) not in syspath:
             syspath.insert(1, str(self.LIB_PATH))
 
-        self._repo_manager = RepoManager()
+        self._repo_manager = RepoManager(loop=self.bot.loop)
 
     async def cog_install_path(self):
-        """Get the current cog install path.
+        """
+        Get the current cog install path.
 
         Returns
         -------
-        pathlib.Path
+        :class:`pathlib.Path`
             The default cog install path.
 
         """
         return await self.bot.cog_mgr.install_path()
 
-    async def installed_cogs(self) -> Tuple[Installable]:
+    async def installed_cogs(self) -> Tuple[Installable, ...]:
         """Get info on installed cogs.
 
         Returns
         -------
-        `tuple` of `Installable`
-            All installed cogs / shared lib directories.
+        Tuple[:class:`~.installable.Installable`, ...]
+            All installed cogs / shared libs in existing repos.
 
         """
-        installed = await self.conf.installed()
-        # noinspection PyTypeChecker
-        return tuple(Installable.from_json(v, self._repo_manager) for v in installed)
+        installed_json = await self.conf.installed()
+        installed = []
 
-    async def _add_to_installed(self, cog: Installable):
-        """Mark a cog as installed.
+        for v in installed_json:
+            try:
+                installed.append(installable_from_json(v, self._repo_manager))
+            except Exception as e:
+                log.exception(e)
+                continue
+
+        return tuple(installed)
+
+    async def _add_to_installed(self, cog: Installable, version: str = None):
+        """
+        Mark a cog as installed.
 
         Parameters
         ----------
-        cog : Installable
+        cog : :class:`~.installable.Installable`
             The cog to check off.
 
         """
@@ -88,16 +100,18 @@ class Downloader:
         cog_json = cog.to_json()
 
         if cog_json not in installed:
+            cog_json["cog_version"] = version
             installed.append(cog_json)
             await self.conf.installed.set(installed)
 
     async def _remove_from_installed(self, cog: Installable):
-        """Remove a cog from the saved list of installed cogs.
+        """
+        Remove a cog from the saved list of installed cogs.
 
         Parameters
         ----------
-        cog : Installable
-            The cog to remove.
+        cog : :class:`~.installable.Installable`
+            The cog to remove from the installed list.
 
         """
         installed = await self.conf.installed()
@@ -107,75 +121,84 @@ class Downloader:
             installed.remove(cog_json)
             await self.conf.installed.set(installed)
 
-    async def _reinstall_cogs(self, cogs: Tuple[Installable]) -> Tuple[Installable]:
+    async def _reinstall_cogs(self, cogs: Collection[Installable]) -> FrozenSet[Installable]:
         """
         Installs a list of cogs, used when updating.
-        :param cogs:
-        :return: Any cogs that failed to copy
+
+        Parameters
+        ----------
+        cogs : Collection[:class:`~.installable.Installable`]
+            The cogs to (re)install.
+
+        Returns
+        -------
+        FrozenSet[:class:`~.installable.Installable`]
+            Any cogs that failed to install.
         """
         failed = []
         for cog in cogs:
-            if not await cog.copy_to(await self.cog_install_path()):
+            if not await cog.repo.install_cog(cog):
                 failed.append(cog)
 
-        # noinspection PyTypeChecker
-        return tuple(failed)
+        return frozenset(failed)
 
-    async def _reinstall_libraries(self, cogs: Tuple[Installable]) -> Tuple[Installable]:
+    async def _reinstall_libraries(self, cogs: Collection[Installable]) -> FrozenSet[Installable]:
         """
-        Reinstalls any shared libraries from the repos of cogs that
-            were updated.
-        :param cogs:
-        :return: Any libraries that failed to copy
-        """
-        repo_names = set(cog.repo_name for cog in cogs)
-        unfiltered_repos = (self._repo_manager.get_repo(r) for r in repo_names)
-        repos = filter(lambda r: r is not None, unfiltered_repos)
+        Reinstalls any shared libraries from the repos of cogs that were updated.
 
+        Parameters
+        ----------
+        cogs : Collection[:class:`~.installable.Installable`]
+            The cogs whose libraries should be (re)installed.
+
+        Returns
+        -------
+        FrozenSet[:class:`~.installable.Installable`]
+            Any libraries that failed to install.
+        """
+        repos = set(c.repo for c in cogs if c.repo)
         failed = []
 
         for repo in repos:
-            if not await repo.install_libraries(target_dir=self.SHAREDLIB_PATH):
-                failed.extend(repo.available_libraries)
+            repo_failed = await repo.install_libraries()
+            failed.extend(repo_failed)
 
-        # noinspection PyTypeChecker
-        return tuple(failed)
+        return frozenset(failed)
 
-    async def _reinstall_requirements(self, cogs: Tuple[Installable]) -> bool:
+    async def _reinstall_requirements(self, cogs: Collection[Installable]) -> FrozenSet[str]:
         """
         Reinstalls requirements for given cogs that have been updated.
-            Returns a bool that indicates if all requirement installations
-            were successful.
-        :param cogs:
-        :return:
+
+        Parameters
+        ----------
+        cogs : Collection[:class:`~.installable.Installable`]
+            The cogs whose requirements should be (re)installed.
+
+        Returns
+        -------
+        FrozenSet[`str`]
+            The names of the requirements that failed to install.
+
         """
-
-        # Reduces requirements to a single list with no repeats
         requirements = set(r for c in cogs for r in c.requirements)
-        repo_names = self._repo_manager.get_all_repo_names()
-        repos = [(self._repo_manager.get_repo(rn), []) for rn in repo_names]
+        failed = []
 
-        # This for loop distributes the requirements across all repos
-        # which will allow us to concurrently install requirements
-        for i, req in enumerate(requirements):
-            repo_index = i % len(repos)
-            repos[repo_index][1].append(req)
+        for req in requirements:
+            if not await self._repo_manager.pip_install(downloader=self, requirements=(req,)):
+                failed.append(req)
 
-        has_reqs = list(filter(lambda item: len(item[1]) > 0, repos))
-
-        ret = True
-        for repo, reqs in has_reqs:
-            for req in reqs:
-                # noinspection PyTypeChecker
-                ret = ret and await repo.install_raw_requirements([req], self.LIB_PATH)
-        return ret
+        return frozenset(failed)
 
     @staticmethod
     async def _delete_cog(target: Path):
         """
-        Removes an (installed) cog.
-        :param target: Path pointing to an existing file or directory
-        :return:
+        Removes an (installed) cog's files.
+
+        Parameters
+        ----------
+        target : :class:`~pathlib.Path`
+            The path to be removed
+
         """
         if not target.exists():
             return
@@ -187,12 +210,11 @@ class Downloader:
 
     @commands.command()
     @checks.is_owner()
-    async def pipinstall(self, ctx, *deps: str):
+    async def pipinstall(self, ctx, *packages: str):
         """
-        Installs a group of dependencies using pip.
+        Installs a group of packages using pip.
         """
-        repo = Repo("", "", "", Path.cwd(), loop=ctx.bot.loop)
-        success = await repo.install_raw_requirements(deps, self.LIB_PATH)
+        success = await self._repo_manager.pip_install(downloader=self, requirements=packages)
 
         if success:
             await ctx.send(_("Libraries installed."))
@@ -220,56 +242,65 @@ class Downloader:
         Name can only contain characters A-z, numbers and underscore
         Branch will default to master if not specified
         """
-        agreed = await do_install_agreement(ctx)
-        if not agreed:
-            return
+        if not self.already_agreed:
+            if not await do_install_agreement(ctx):
+                return
+
+            self.already_agreed = True
+
         try:
-            # noinspection PyTypeChecker
-            repo = await self._repo_manager.add_repo(name=name, url=repo_url, branch=branch)
-        except ExistingGitRepo:
-            await ctx.send(_("That git repo has already been added under another name."))
+            repo = await self._repo_manager.add_git_repo(name=name, url=repo_url, branch=branch)
+        except InvalidRepoName:
+            await ctx.send(_("`{}` is not a valid repository name.").format(name))
+        except ExistingRepo:
+            await ctx.send(_("That repo has already been added under another name."))
         except CloningError:
             await ctx.send(_("Something went wrong during the cloning process."))
-            log.exception(_("Something went wrong during the cloning process."))
+            log.exception("Something went wrong during the cloning process.")
         else:
-            await ctx.send(_("Repo `{}` successfully added.").format(name))
+            msg = _("Repo `{}` successfully added.").format(repo.name)
             if repo.install_msg is not None:
-                await ctx.send(repo.install_msg.replace("[p]", ctx.prefix))
+                msg = "{}\n---\n{}".format(msg, repo.install_msg.replace("[p]", ctx.prefix))
+
+            await ctx.send(msg)
 
     @repo.command(name="delete")
-    async def _repo_del(self, ctx, repo_name: Repo):
+    async def _repo_del(self, ctx, repo: Repo):
         """
-        Removes a repo from Downloader and its' files.
+        Removes a repo from Downloader and its files.
         """
-        await self._repo_manager.delete_repo(repo_name.name)
+        await self._repo_manager.delete_repo(repo.name)
 
-        await ctx.send(_("The repo `{}` has been deleted successfully.").format(repo_name.name))
+        await ctx.send(_("The `{}` repo has been successfully deleted.").format(repo.name))
 
     @repo.command(name="list")
     async def _repo_list(self, ctx):
         """
         Lists all installed repos.
         """
-        repos = self._repo_manager.get_all_repo_names()
-        repos = sorted(repos, key=str.lower)
-        joined = _("Installed Repos:\n\n")
-        for repo_name in repos:
-            repo = self._repo_manager.get_repo(repo_name)
-            joined += "+ {}: {}\n".format(repo.name, repo.short or "")
+        lines = [_("Installed Repos:") + "\n"]
+        repos = self._repo_manager.get_all_repos()
+        repos = sorted(repos, key=lambda r: r.name.lower())
 
-        for page in pagify(joined, ["\n"], shorten_by=16):
+        for repo in repos:
+            lines.append(
+                "+ {}{}".format(repo.name, ": {}".format(repo.short) if repo.short else "")
+            )
+
+        if not repos:
+            await ctx.send(_("No repos found."))
+            return
+
+        for page in pagify("\n".join(lines), ["\n"], shorten_by=16):
             await ctx.send(box(page.lstrip(" "), lang="diff"))
 
     @repo.command(name="info")
-    async def _repo_info(self, ctx, repo_name: Repo):
+    async def _repo_info(self, ctx, repo: Repo):
         """
         Lists information about a single repo
         """
-        if repo_name is None:
-            await ctx.send(_("There is no repo `{}`").format(repo_name.name))
-            return
 
-        msg = _("Information on {}:\n{}").format(repo_name.name, repo_name.description or "")
+        msg = _("Information on {}:\n{}").format(repo.name, repo.description or "")
         await ctx.send(box(msg))
 
     @commands.group()
@@ -281,15 +312,15 @@ class Downloader:
         pass
 
     @cog.command(name="install")
-    async def _cog_install(self, ctx, repo_name: Repo, cog_name: str):
+    async def _cog_install(self, ctx, repo: Repo, cog_name: str):
         """
         Installs a cog from the given repo.
         """
-        cog = discord.utils.get(repo_name.available_cogs, name=cog_name)  # type: Installable
+        cog = discord.utils.get(repo.available_cogs, name=cog_name)  # type: Installable
         if cog is None:
             await ctx.send(
-                _("Error, there is no cog by the name of `{}` in the `{}` repo.").format(
-                    cog_name, repo_name.name
+                _("There is no cog by the name of `{}` in the `{}` repo.").format(
+                    cog_name, repo.name
                 )
             )
             return
@@ -301,38 +332,44 @@ class Downloader:
             )
             return
 
-        if not await repo_name.install_requirements(cog, self.LIB_PATH):
+        if not await self._repo_manager.install_requirements(downloader=self, module=cog):
             await ctx.send(
                 _("Failed to install the required libraries for `{}`: `{}`").format(
-                    cog.name, cog.requirements
+                    cog.name, ", ".join(cog.requirements)
                 )
             )
             return
 
-        await repo_name.install_cog(cog, await self.cog_install_path())
+        async with ctx.typing():
+            try:
+                version = await repo.get_repo_module_version(cog)
+            except NotImplementedError:
+                version = None
 
-        await self._add_to_installed(cog)
+            await repo.install_cog(downloader=self, cog=cog)
+            await self._add_to_installed(cog, version=version)
+            await repo.install_libraries(downloader=self)
 
-        await repo_name.install_libraries(self.SHAREDLIB_PATH)
+        msg = _("Cog `{}` successfully installed.").format(cog_name)
 
-        await ctx.send(_("`{}` cog successfully installed.").format(cog_name))
         if cog.install_msg is not None:
-            await ctx.send(cog.install_msg.replace("[p]", ctx.prefix))
+            msg = "{}\n---\n{}".format(msg, cog.install_msg.replace("[p]", ctx.prefix))
+
+        await ctx.send(msg)
 
     @cog.command(name="uninstall")
-    async def _cog_uninstall(self, ctx, cog_name: InstalledCog):
+    async def _cog_uninstall(self, ctx, cog: InstalledCog):
         """
         Allows you to uninstall cogs that were previously installed
             through Downloader.
         """
-        # noinspection PyUnresolvedReferences,PyProtectedMember
-        real_name = cog_name.name
+        real_name = cog.name
 
         poss_installed_path = (await self.cog_install_path()) / real_name
+
         if poss_installed_path.exists():
             await self._delete_cog(poss_installed_path)
-            # noinspection PyTypeChecker
-            await self._remove_from_installed(cog_name)
+            await self._remove_from_installed(cog)
             await ctx.send(_("`{}` was successfully removed.").format(real_name))
         else:
             await ctx.send(
@@ -344,72 +381,113 @@ class Downloader:
             )
 
     @cog.command(name="update")
-    async def _cog_update(self, ctx, cog_name: InstalledCog = None):
+    async def _cog_update(self, ctx, cog: InstalledCog = None):
         """
         Updates all cogs or one of your choosing.
         """
         installed_cogs = set(await self.installed_cogs())
+        error_repos = {}
+        updates = {}
 
-        if cog_name is None:
-            updated = await self._repo_manager.update_all_repos()
+        async with ctx.typing():
+            if cog is None:
+                update_results = await self._repo_manager.update_all_repos()
+            else:
+                try:
+                    update_results = {cog.repo: await cog.repo.update()}
+                except Exception as e:
+                    update_results = {cog.repo: e}
 
-        else:
-            try:
-                updated = await self._repo_manager.update_repo(cog_name.repo_name)
-            except KeyError:
-                # Thrown if the repo no longer exists
-                updated = {}
+            for repo, result in update_results.items():
+                if isinstance(result, Exception):
+                    error_repos[repo] = result
+                elif result:
+                    updates[repo] = result
 
-        updated_cogs = set(cog for repo in updated.keys() for cog in repo.available_cogs)
-        installed_and_updated = updated_cogs & installed_cogs
+            updated_cogs = set().union(*(result.updated.cogs for result in updates.values()))
+            installed_updated = updated_cogs & installed_cogs
 
-        # noinspection PyTypeChecker
-        await self._reinstall_requirements(installed_and_updated)
+            if cog:
+                installed_updated &= {cog}
 
-        # noinspection PyTypeChecker
-        await self._reinstall_cogs(installed_and_updated)
+            if not installed_updated:
+                if cog:
+                    msg = _("`{}` is already up to date.").format(cog.name)
+                else:
+                    msg = _("All installed cogs are already up to date.")
 
-        # noinspection PyTypeChecker
-        await self._reinstall_libraries(installed_and_updated)
-        await ctx.send(_("Cog update completed successfully."))
+                await ctx.send(msg)
+                return
+            else:
+                lines = []
+
+                await self._reinstall_requirements(installed_updated)
+                await self._reinstall_cogs(installed_updated)
+                await self._reinstall_libraries(installed_updated)
+
+                for repo in sorted(updates, key=lambda r: r.name):
+                    update = updates[repo]
+                    repo_installed_updated = update and (update.updated.cogs & installed_updated)
+
+                    if repo_installed_updated:
+                        lines.append("\n{}:".format(repo.name))
+                        lines.extend("+ {}".format(c.name) for c in repo_installed_updated)
+
+                header = _("The following cogs were updated:")
+                footer = _("Run `[p]reload COG_NAME` to reload an updated cog.")
+                margin = len(header) + len(footer) + 18  # \n```diff\n\ndiff```\n
+
+                pages = pagify("\n".join(lines), ["\n"], shorten_by=margin)
+                pages = list(box(p, lang="diff") for p in pages)
+                pages[0] = "{}\n{}".format(header, pages[0])
+                pages[-1] = "{}\n{}".format(pages[-1], header)
+
+                for page in pages:
+                    await ctx.send(page)
 
     @cog.command(name="list")
-    async def _cog_list(self, ctx, repo_name: Repo):
+    async def _cog_list(self, ctx, repo: Repo):
         """
         Lists all available cogs from a single repo.
         """
-        installed = await self.installed_cogs()
-        installed_str = ""
-        if installed:
-            installed_str = _("Installed Cogs:\n") + "\n".join(
-                [
-                    "- {}{}".format(i.name, ": {}".format(i.short) if i.short else "")
-                    for i in installed
-                    if i.repo_name == repo_name.name
-                ]
+        installed = [c for c in await self.installed_cogs() if c.repo is repo]
+        installed_set = set(installed)
+        cogs = [c for c in repo.available_cogs if not (c.hidden or c in installed_set)]
+        lines = []
+
+        if cogs:
+            cogs.sort(key=lambda c: c.name)
+            lines.append(_("Available Cogs:"))
+            lines.extend(
+                "+ {}{}".format(c.name, ": {}".format(c.short) if c.short else "") for c in cogs
             )
-        cogs = repo_name.available_cogs
-        cogs = _("Available Cogs:\n") + "\n".join(
-            [
-                "+ {}: {}".format(c.name, c.short or "")
-                for c in cogs
-                if not (c.hidden or c in installed)
-            ]
-        )
-        cogs = cogs + "\n\n" + installed_str
-        for page in pagify(cogs, ["\n"], shorten_by=16):
+
+        if installed:
+            if cogs:
+                lines.append("")
+
+            installed.sort(key=lambda i: i.name)
+            lines.append(_("Installed Cogs:"))
+            lines.extend(
+                "- {}{}".format(i.name, ": {}".format(i.short) if i.short else "")
+                for i in installed
+            )
+
+        if not lines:
+            await ctx.send(_("There are no cogs in the `{}` repo.").format(repo.name))
+            return
+
+        for page in pagify("\n".join(lines), ["\n"], shorten_by=16):
             await ctx.send(box(page.lstrip(" "), lang="diff"))
 
     @cog.command(name="info")
-    async def _cog_info(self, ctx, repo_name: Repo, cog_name: str):
+    async def _cog_info(self, ctx, repo: Repo, cog_name: str):
         """
         Lists information about a single cog.
         """
-        cog = discord.utils.get(repo_name.available_cogs, name=cog_name)
+        cog = discord.utils.get(repo.available_cogs, name=cog_name)
         if cog is None:
-            await ctx.send(
-                _("There is no cog `{}` in the repo `{}`").format(cog_name, repo_name.name)
-            )
+            await ctx.send(_("There is no cog `{}` in the repo `{}`").format(cog_name, repo.name))
             return
 
         msg = _("Information on {}:\n{}\n\nRequirements: {}").format(
@@ -429,7 +507,7 @@ class Downloader:
 
         Returns
         -------
-        `tuple` of (`bool`, `Installable`)
+        `tuple` of (`bool`, :class:`~.installable.Installable`)
             :code:`(True, Installable)` if the cog is installed, else
             :code:`(False, None)`.
 
@@ -448,8 +526,8 @@ class Downloader:
         ----------
         command_name : str
             Name of the command which belongs to the cog.
-        cog_installable : `Installable` or `object`
-            Can be an `Installable` instance or a Cog instance.
+        cog_installable : :class:`~.installable.Installable` or `object`
+            Can be an :class:`~.installable.Installable` instance or a Cog instance.
 
         Returns
         -------
@@ -459,7 +537,7 @@ class Downloader:
         """
         if isinstance(cog_installable, Installable):
             made_by = ", ".join(cog_installable.author) or _("Missing from info.json")
-            repo = self._repo_manager.get_repo(cog_installable.repo_name)
+            repo = self._repo_manager.get_repo(cog_installable.repo.name)
             repo_url = repo.url
             cog_name = cog_installable.name
         else:
@@ -484,7 +562,7 @@ class Downloader:
         Returns
         -------
         str
-            The name of the cog according to Downloader..
+            The name of the cog according to Downloader.
 
         """
         splitted = instance.__module__.split(".")
@@ -493,8 +571,7 @@ class Downloader:
     @commands.command()
     async def findcog(self, ctx: commands.Context, command_name: str):
         """
-        Figures out which cog a command comes from. Only works with loaded
-            cogs.
+        Figures out which cog a command comes from. Only works with loaded cogs.
         """
         command = ctx.bot.all_commands.get(command_name)
 

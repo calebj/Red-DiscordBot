@@ -31,7 +31,7 @@ class RepoJSONMixin:
         else:
             self._info = info
 
-        self.author = info.get("author")
-        self.install_msg = info.get("install_msg")
-        self.short = info.get("short")
-        self.description = info.get("description")
+        self.author = info.get("author") or info.get("AUTHOR")
+        self.install_msg = info.get("install_msg") or info.get("INSTALL_MSG")
+        self.short = info.get("short") or info.get("SHORT")
+        self.description = info.get("description") or info.get("DESCRIPTION")

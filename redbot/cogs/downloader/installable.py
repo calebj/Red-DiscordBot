@@ -1,14 +1,19 @@
-import json
+import abc
+from collections import namedtuple
 import distutils.dir_util
-import shutil
 from enum import Enum
+import json
 from pathlib import Path
-from typing import MutableMapping, Any, TYPE_CHECKING
+import shutil
+from typing import Any, Dict, TYPE_CHECKING
+from packaging.specifiers import SpecifierSet
 
+from .errors import MissingRepo
 from .log import log
 from .json_mixins import RepoJSONMixin
 
 if TYPE_CHECKING:
+    from .repo import Repo
     from .repo_manager import RepoManager
 
 
@@ -18,68 +23,161 @@ class InstallableType(Enum):
     SHARED_LIBRARY = 2
 
 
-class Installable(RepoJSONMixin):
-    """Base class for anything the Downloader cog can install.
+class InstallableRequirementRepoType(Enum):
+    UNKNOWN = 0
+    GIT = 1
+    PYPI = 2
+
+
+InstallableRequirementRepo = namedtuple("InstallableRequirementRepo", "")
+InstallableRequirementRepo.__doc__ = """
+A named tuple describing a reference to a 
+"""
+
+
+InstallableRequirement = namedtuple("InstallableRequirement", "name specifier repo")
+InstallableRequirement.__doc__ = """
+A named tuple describing an installable's requirement (for Red, not pip).
+
+Attributes
+----------
+name : `str`
+    The name of the required installable.
+specifier : Optional[:class:`~packaging.specifiers.SpecifierSet`]
+    A specifier for the version of the required installable.
+    If this attribute is :code:`None`, then any version will work.
+repo : 
+    A reference to the repository containing the required installable.
+
+"""
+
+
+class Installable(abc.ABC):
+    """
+    Base class for anything the Downloader cog can install.
 
      - Modules
      - Repo Libraries
      - Other stuff?
 
-    The attributes of this class will mostly come from the installation's
-    info.json.
+    .. _specifier set: https://www.python.org/dev/peps/pep-0440/#version-specifiers
 
     Attributes
     ----------
-    repo_name : `str`
-        Name of the repository which this package belongs to.
-    author : `tuple` of `str`, optional
+    repo : :class:`~.repo.Repo`
+        The repository which this package belongs to.
+    name : `str`
+        Name of the installable package.
+    author : Tuple[`str`, ...]
         Name(s) of the author(s).
-    bot_version : `tuple` of `int`
-        The minimum bot version required for this installation. Right now
-        this is always :code:`3.0.0`.
-    min_python_version : `tuple` of `int`
-        The minimum python version required for this cog. This field will not
-        apply to repo info.json's.
+    bot_version : Optional[:class:`~packaging.specifiers.SpecifierSet`]
+        A `specifier set`_ for the Red version required for this installable.
+        Defaults to :code:`>=3.0.0a0`.
+    python_version : Optional[:class:`~packaging.specifiers.SpecifierSet`]
+        A `specifier set`_ for the Python version required for this installable.
+        Defaults to :code:`>=3.6.0`.
     hidden : `bool`
-        Whether or not this cog will be hidden from the user when they use
-        `Downloader`'s commands.
-    required_cogs : `dict`
-        In the form :code:`{cog_name : repo_url}`, these are cogs which are
-        required for this installation.
-    requirements : `tuple` of `str`
-        Required libraries for this installation.
-    tags : `tuple` of `str`
-        List of tags to assist in searching.
-    type : `int`
-        The type of this installation, as specified by
-        :class:`InstallationType`.
+        Whether or not this cog will be hidden from the user in Downloader.
+    required_cogs : FrozenSet[:class:`~.installable.RequiredInstallable`]
+        The cogs which are required for this installation. Format:
+
+        .. code-block:: python
+
+            {
+                "cog_name" : {
+                    "version" : "specifier_set",  # see PEP 440
+                    "repo" : {
+                        "url"  : "https://github.com/repo_owner/repo_name.git@branch",
+                        "type" : "git",  # optional, defaults to "git", but can be "pypi"
+                        "name" : "repo_name"  # optional, used for missing repo display
+                    }
+                }, ...
+            }
+
+        :code:`version` and :code:`repo` are optional.
+        If :code:`repo` is not specified, it is assumed to be the same repo.
+    requirements : Tuple[`str`, ...]
+        Pip requirement expresions for this installable.
+    tags : `frozenset` of `str`
+        List of tags to assist in searching. Converted to lowercase upon load.
+    type : :class:`InstallationType`
+        The type of this installable, as specified by the :class:`InstallationType` enum.
 
     """
 
-    def __init__(self, location: Path):
+    TYPE_NAME = "ABSTRACT"
+
+    def __init__(self, repo: "Repo", name: str, **kwargs):
         """Base installable initializer.
 
         Parameters
         ----------
-        location : pathlib.Path
-            Location (file or folder) to the installable.
+        repo : :class:`~.repo.Repo`
+            The repository which this package belongs to.
+        name : `str`
+            Name of the installable package.
 
         """
-        super().__init__(location)
+        self.repo = repo
+        self.name = name
+
+        self.author = kwargs.get("author", ())
+        self.bot_version = kwargs.get("bot_version", SpecifierSet(">=3.0a0"))
+        self.python_version = kwargs.get("python_version", SpecifierSet(">=3.6"))
+        self.hidden = kwargs.get("hidden", False)
+        self.disabled = kwargs.get("disabled", False)
+        self.required_cogs = kwargs.get("required_cogs", {})
+        self.requirements = kwargs.get("requirements", ())
+        self.tags = frozenset(s.lower() for s in kwargs.get("tags", ()))
+        self.type = kwargs.get("type", InstallableType.UNKNOWN)
+
+    def __eq__(self, other):
+        # noinspection PyProtectedMember
+        return isinstance(other, type(self)) and self._key == other._key
+
+    def __hash__(self):
+        return hash(self._key)
+
+    def to_json(self):
+        return {"cog_name": self.name, "repo_name": self.repo.name, "inst_type": self.TYPE_NAME}
+
+    @property
+    @abc.abstractmethod
+    def _key(self):
+        pass
+
+    @classmethod
+    @abc.abstractmethod
+    def from_json(cls, data: dict, repo_mgr: "RepoManager") -> "Installable":
+        pass
+
+
+class FolderInstallable(Installable, RepoJSONMixin):
+    """
+    An installable that comes from a local folder with info.json metadata.
+
+    The attributes of this class mostly come from the installation's info.json.
+    """
+
+    TYPE_NAME = "FOLDER"
+
+    def __init__(self, repo: "FolderRepo", location: Path, **kwargs):
+        """
+        Folder installable initializer.
+
+        Parameters
+        ----------
+        repo : :class:`~.repos.folder.FolderRepo`
+            The repository which this package belongs to.
+        location : :class:`~pathlib.Path`
+            Location (file or folder) of the installable.
+            The last element (stem) of the path is used as the installable name.
+
+        """
+        Installable.__init__(self, repo, location.stem, **kwargs)
+        RepoJSONMixin.__init__(self, location)
 
         self._location = location
-
-        self.repo_name = self._location.parent.stem
-
-        self.author = ()
-        self.bot_version = (3, 0, 0)
-        self.min_python_version = (3, 5, 1)
-        self.hidden = False
-        self.disabled = False
-        self.required_cogs = {}  # Cog name -> repo URL
-        self.requirements = ()
-        self.tags = ()
-        self.type = InstallableType.UNKNOWN
 
         if self._info_file.exists():
             self._process_info_file(self._info_file)
@@ -87,36 +185,34 @@ class Installable(RepoJSONMixin):
         if self._info == {}:
             self.type = InstallableType.COG
 
-    def __eq__(self, other):
-        # noinspection PyProtectedMember
-        return self._location == other._location
-
-    def __hash__(self):
-        return hash(self._location)
-
     @property
-    def name(self):
-        """`str` : The name of this package."""
-        return self._location.stem
+    def _key(self):
+        return self.repo, self._location
 
     async def copy_to(self, target_dir: Path) -> bool:
         """
-        Copies this cog/shared_lib to the given directory. This
-        will overwrite any files in the target directory.
+        Copies this cog/shared_lib to the given directory. This will overwrite any files in the
+        target directory.
 
-        :param pathlib.Path target_dir: The installation directory to install to.
-        :return: Status of installation
-        :rtype: bool
+        Parameters
+        ----------
+        target_dir : :class:`~pathlib.Path`
+            The path or directory to install to.
+
+        Returns
+        -------
+        `bool`
+            Whether the copy was successful.
+
         """
         if self._location.is_file():
             copy_func = shutil.copy2
         else:
             copy_func = distutils.dir_util.copy_tree
 
-        # noinspection PyBroadException
         try:
             copy_func(src=str(self._location), dst=str(target_dir / self._location.stem))
-        except:
+        except Exception:
             log.exception("Error occurred when copying path: {}".format(self._location))
             return False
         return True
@@ -127,14 +223,20 @@ class Installable(RepoJSONMixin):
         if self._info_file.exists():
             self._process_info_file()
 
-    def _process_info_file(self, info_file_path: Path = None) -> MutableMapping[str, Any]:
+    def _process_info_file(self, info_file_path: Path = None) -> Dict[str, Any]:
         """
         Processes an information file. Loads dependencies among other
         information into this object.
 
-        :type info_file_path:
-        :param info_file_path: Optional path to information file, defaults to `self.__info_file`
-        :return: Raw information dictionary
+        Parameters
+        ----------
+        info_file_path : Optional[:class:`~pathlib.Path`]
+            Optional path to information file, defaults to `self._info_file`.
+
+        Returns
+        -------
+        Dict[`str`, Any]
+            The raw information dictionary read from the info file.
         """
         info_file_path = info_file_path or self._info_file
         if info_file_path is None or not info_file_path.is_file():
@@ -151,58 +253,47 @@ class Installable(RepoJSONMixin):
                 self._info = info
 
         try:
-            author = tuple(info.get("author", []))
+            self.author = tuple(info.get("author", []))
         except ValueError:
-            author = ()
-        self.author = author
+            self.author = ()
 
         try:
-            bot_version = tuple(info.get("bot_version", [3, 0, 0]))
+            self.bot_version = tuple(info.get("bot_version", [3, 0, 0]))
         except ValueError:
-            bot_version = self.bot_version
-        self.bot_version = bot_version
+            pass
 
         try:
-            min_python_version = tuple(info.get("min_python_version", [3, 5, 1]))
+            self.python_version = tuple(info.get("python_version", [3, 6, 0]))
         except ValueError:
-            min_python_version = self.min_python_version
-        self.min_python_version = min_python_version
+            self.python_version = self.python_version
 
         try:
-            hidden = bool(info.get("hidden", False))
+            self.hidden = bool(info.get("hidden", False))
         except ValueError:
-            hidden = False
-        self.hidden = hidden
+            self.hidden = False
 
         try:
-            disabled = bool(info.get("disabled", False))
+            self.disabled = bool(info.get("disabled", False))
         except ValueError:
-            disabled = False
-        self.disabled = disabled
+            self.disabled = False
 
         self.required_cogs = info.get("required_cogs", {})
-
         self.requirements = info.get("requirements", ())
 
         try:
-            tags = tuple(info.get("tags", ()))
+            self.tags = frozenset(s.lower() for s in info.get("tags", ()))
         except ValueError:
-            tags = ()
-        self.tags = tags
+            self.tags = frozenset()
 
-        installable_type = info.get("type", "")
-        if installable_type in ("", "COG"):
-            self.type = InstallableType.COG
-        elif installable_type == "SHARED_LIBRARY":
-            self.type = InstallableType.SHARED_LIBRARY
-            self.hidden = True
-        else:
+        try:
+            installable_type = self.type = InstallableType[info.get("type", "COG")]
+
+            if installable_type is InstallableType.SHARED_LIBRARY:
+                self.hidden = True
+        except KeyError:
             self.type = InstallableType.UNKNOWN
 
         return info
-
-    def to_json(self):
-        return {"repo_name": self.repo_name, "cog_name": self.name}
 
     @classmethod
     def from_json(cls, data: dict, repo_mgr: "RepoManager"):
@@ -210,11 +301,18 @@ class Installable(RepoJSONMixin):
         cog_name = data["cog_name"]
 
         repo = repo_mgr.get_repo(repo_name)
-        if repo is not None:
-            repo_folder = repo.folder_path
-        else:
-            repo_folder = repo_mgr.repos_folder / "MISSING_REPO"
+        if repo is None:
+            raise MissingRepo("There is no repo with the name {}".format(repo_name))
 
-        location = repo_folder / cog_name
+        location = repo.folder_path / cog_name
 
-        return cls(location=location)
+        return cls(repo=repo, location=location)
+
+
+INSTALLABLE_TYPES = {FolderInstallable.TYPE_NAME: FolderInstallable}
+
+
+def from_json(data: dict, repo_mgr: "RepoManager") -> Installable:
+    type_name = data["inst_type"]
+    cls = INSTALLABLE_TYPES[type_name]
+    return cls.from_json(data, repo_mgr)

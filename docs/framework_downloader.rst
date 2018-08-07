@@ -30,7 +30,7 @@ Keys common to both repo and cog info.json (case sensitive)
 Keys specific to the cog info.json (case sensitive)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-- ``bot_version`` (list of integer) - Min version number of Red in the format ``(MAJOR, MINOR, PATCH)``
+- ``bot_version`` - A version string in the format ``"MAJOR.MINOR.PATCH"``
 
 - ``hidden`` (bool) - Determines if a cog is visible in the cog list for a repo.
 
@@ -52,31 +52,62 @@ Keys specific to the cog info.json (case sensitive)
 API Reference
 *************
 
-.. automodule:: redbot.cogs.downloader.json_mixins
+..
+    automodule:: redbot.cogs.downloader.json_mixins
 
-.. autoclass RepoJSONMixin
-    :members
-
-.. automodule:: redbot.cogs.downloader.installable
+..
+    autoclass:: RepoJSONMixin
+    :members:
 
 Installable
 ^^^^^^^^^^^
 
+.. automodule:: redbot.cogs.downloader.installable
+
 .. autoclass:: Installable
     :members:
 
-.. automodule:: redbot.cogs.downloader.repo_manager
+.. autoclass:: FolderInstallable
+    :show-inheritance:
+    :members:
 
 Repo
 ^^^^
 
+.. automodule:: redbot.cogs.downloader.repo
+
 .. autoclass:: Repo
+    :members:
+
+.. autoclass:: redbot.cogs.downloader.repos.folder.FolderRepo
+    :show-inheritance:
+    :members:
+
+.. autoclass:: redbot.cogs.downloader.repos.git.GitRepo
+    :show-inheritance:
     :members:
 
 Repo Manager
 ^^^^^^^^^^^^
 
+.. automodule:: redbot.cogs.downloader.repo_manager
+
 .. autoclass:: RepoManager
+    :members:
+
+Update Result
+^^^^^^^^^^^^^
+
+.. automodule:: redbot.cogs.downloader.update_tracker
+
+.. autoclass:: UpdateResult
+
+.. autoclass:: ModuleLists
+
+Utilities
+^^^^^^^^^
+
+.. automodule:: redbot.cogs.downloader.utils
     :members:
 
 Exceptions
@@ -84,4 +115,3 @@ Exceptions
 
 .. automodule:: redbot.cogs.downloader.errors
     :members:
-

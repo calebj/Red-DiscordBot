@@ -4,15 +4,19 @@ import json
 
 import pytest
 
-from redbot.cogs.downloader.repo_manager import RepoManager, Repo
-from redbot.cogs.downloader.installable import Installable
+from redbot.cogs.downloader.repo_manager import RepoManager
+from redbot.cogs.downloader.repos.git import GitRepo
+from redbot.cogs.downloader.repos.folder import FolderRepo
+from redbot.cogs.downloader.installable import FolderInstallable
 
 __all__ = [
     "patch_relative_to",
     "repo_manager",
-    "repo",
-    "repo_norun",
-    "bot_repo",
+    "folder_repo",
+    "git_repo",
+    "repo_manager_norun",
+    "bot_folder_repo",
+    "bot_git_repo",
     "INFO_JSON",
     "installable",
     "fake_run_noprint",
@@ -41,41 +45,63 @@ def patch_relative_to(monkeysession):
 
 
 @pytest.fixture
-def repo_manager(tmpdir_factory):
+def repo_manager(monkeypatch, tmpdir_factory, event_loop):
     rm = RepoManager()
-    # rm.repos_folder = Path(str(tmpdir_factory.getbasetemp())) / 'repos'
+    repos_folder = Path(str(tmpdir_factory.getbasetemp())) / "repos"
+    monkeypatch.setattr(
+        "redbot.cogs.downloader.repo_manager.RepoManager.repos_folder", repos_folder
+    )
     return rm
 
 
 @pytest.fixture
-def repo(tmpdir):
+def git_repo(tmpdir, repo_manager):
     repo_folder = Path(str(tmpdir)) / "repos" / "squid"
     repo_folder.mkdir(parents=True, exist_ok=True)
 
-    return Repo(
-        url="https://github.com/tekulvw/Squid-Plugins",
+    repo = GitRepo(
+        manager=repo_manager,
         name="squid",
-        branch="rewrite_cogs",
         folder_path=repo_folder,
+        url="https://github.com/tekulvw/Squid-Plugins",
+        branch="rewrite_cogs",
     )
-
-
-@pytest.fixture
-def repo_norun(repo):
-    repo._run = fake_run
+    repo.populate()
+    repo_manager._repos[repo.name] = repo
     return repo
 
 
 @pytest.fixture
-def bot_repo(event_loop):
-    cwd = Path.cwd()
-    return Repo(
-        name="Red-DiscordBot",
-        branch="WRONG",
-        url="https://empty.com/something.git",
-        folder_path=cwd,
-        loop=event_loop,
-    )
+def folder_repo(tmpdir, repo_manager):
+    repo_folder = Path(str(tmpdir)) / "repos" / "test_repo"
+    repo_folder.mkdir(parents=True, exist_ok=True)
+
+    repo = FolderRepo(manager=repo_manager, name="test_repo", folder_path=repo_folder)
+    repo.populate()
+    repo_manager._repos[repo.name] = repo
+    return repo
+
+
+@pytest.fixture
+def repo_manager_norun(repo_manager):
+    repo_manager._run = fake_run
+    return repo_manager
+
+
+@pytest.fixture
+def bot_git_repo(repo_manager):
+    repo = GitRepo(manager=repo_manager, name="Red-DiscordBot", folder_path=Path.cwd())
+    repo.populate()
+    repo_manager._repos[repo.name] = repo
+    return repo
+
+
+@pytest.fixture
+def bot_folder_repo(repo_manager):
+    repo = FolderRepo(manager=repo_manager, name="Red-DiscordBot", folder_path=Path.cwd())
+    repo.populate()
+    repo_manager._repos[repo.name] = repo
+    return repo
 
 
 # Installable
@@ -94,10 +120,18 @@ INFO_JSON = {
 
 
 @pytest.fixture
-def installable(tmpdir):
-    cog_path = tmpdir.mkdir("test_repo").mkdir("test_cog")
-    info_path = cog_path.join("info.json")
-    info_path.write_text(json.dumps(INFO_JSON), "utf-8")
+def installable(repo_manager, folder_repo):
+    cog_path = folder_repo.folder_path / "test_cog"
+    info_path = cog_path / "info.json"
+    init_path = cog_path / "__init__.py"
 
-    cog_info = Installable(Path(str(cog_path)))
-    return cog_info
+    cog_path.mkdir(parents=True, exist_ok=True)
+    init_path.touch(exist_ok=True)
+
+    with info_path.open("w", encoding="utf-8") as f:
+        f.write(json.dumps(INFO_JSON))
+
+    folder_repo.populate()
+
+    cog = FolderInstallable(folder_repo, Path(str(cog_path)))
+    return cog

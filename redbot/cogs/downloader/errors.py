@@ -2,14 +2,18 @@ __all__ = [
     "DownloaderException",
     "GitException",
     "InvalidRepoName",
+    "ExistingRepo",
     "ExistingGitRepo",
+    "MissingRepo",
     "MissingGitRepo",
+    "MissingModule",
     "CloningError",
     "CurrentHashError",
     "HardResetError",
-    "UpdateError",
+    "GitUpdateError",
     "GitDiffError",
     "PipError",
+    "UpdateError",
 ]
 
 
@@ -36,7 +40,23 @@ class InvalidRepoName(DownloaderException):
     pass
 
 
-class ExistingGitRepo(DownloaderException):
+class MissingRepo(DownloaderException):
+    """
+    Thrown when a repo is expected to exist but does not.
+    """
+
+    pass
+
+
+class ExistingRepo(DownloaderException):
+    """
+    Thrown when trying to add a repo tha already exists.
+    """
+
+    pass
+
+
+class ExistingGitRepo(ExistingRepo):
     """
     Thrown when trying to clone into a folder where a
     git repo already exists.
@@ -45,7 +65,16 @@ class ExistingGitRepo(DownloaderException):
     pass
 
 
-class MissingGitRepo(DownloaderException):
+class MissingGitRepo(MissingRepo):
+    """
+    Thrown when a git repo is expected to exist but
+    does not.
+    """
+
+    pass
+
+
+class MissingModule(DownloaderException):
     """
     Thrown when a git repo is expected to exist but
     does not.
@@ -80,7 +109,7 @@ class HardResetError(GitException):
     pass
 
 
-class UpdateError(GitException):
+class GitUpdateError(GitException):
     """
     Thrown when git pull returns a non zero error code.
     """
@@ -99,6 +128,24 @@ class GitDiffError(GitException):
 class PipError(DownloaderException):
     """
     Thrown when pip returns a non-zero return code.
+    """
+
+    pass
+
+
+class UpdateError(DownloaderException):
+    """
+    Thrown when a repo update fails. Wraps the original exception.
+    """
+
+    def __init__(self, repo, original):
+        self.repo = repo
+        self.original = original
+
+
+class InstallationError(DownloaderException):
+    """
+    Thrown when a cog or shared library installation fails for any reason.
     """
 
     pass
